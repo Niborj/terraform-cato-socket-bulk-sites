@@ -449,7 +449,7 @@ module "socket-site" {
   lan_interfaces = [
     for lan in try(each.value.lan_interfaces, []) : merge({
       # For default_lan interfaces, use native_range info; otherwise use lan interface info
-      id              = try(lan.default_lan, false) ? null : lan.id # Pass interface ID for keying
+      id              = try(lan.default_lan, false) ? null : try(lan.id, null) # Pass interface ID for keying (absent in a --strip-ids export)
       name            = try(lan.default_lan, false) ? try(each.value.native_range.interface_name, null) : lan.name
       interface_index = try(lan.default_lan, false) ? (can(tonumber(try(each.value.native_range.index, ""))) ? "INT_${each.value.native_range.index}" : try(each.value.native_range.index, "")) : (can(tonumber(lan.index)) ? "INT_${lan.index}" : lan.index)
       # For default_lan interfaces (native range), omit dest_type so socket module won't create the LAN interface
@@ -547,13 +547,15 @@ module "socket-site" {
       translated_subnet = null
       network_ranges = [
         for nr in lan.network_ranges : merge({
-          name              = nr.name
-          range_type        = nr.range_type
-          subnet            = nr.subnet
-          local_ip          = nr.local_ip
-          gateway           = nr.gateway
-          vlan              = nr.vlan != "" && nr.vlan != null ? tonumber(nr.vlan) : null
-          translated_subnet = try(trimspace(nr.translated_subnet), "") != "" ? nr.translated_subnet : null
+          name       = nr.name
+          range_type = nr.range_type
+          subnet     = nr.subnet
+          local_ip   = nr.local_ip
+          gateway    = nr.gateway
+          vlan       = nr.vlan != "" && nr.vlan != null ? tonumber(nr.vlan) : null
+          # Identity translation (translated == subnet) means "no translation"; omit it so the
+          # range applies on tenants where Static Range Translation is disabled.
+          translated_subnet = try(trimspace(nr.translated_subnet), "") != "" && try(trimspace(nr.translated_subnet), "") != try(trimspace(nr.subnet), "") ? nr.translated_subnet : null
           internet_only     = try(nr.internet_only, null)
           # Extract flat dhcp fields from nested dhcp_settings object (CSV loading creates nested object)
           dhcp_type     = try(nr.dhcp_settings.dhcp_type, null)
@@ -579,9 +581,11 @@ module "socket-site" {
   local_ip             = try(each.value.native_range.local_ip, null)
 
   # Additional native_range fields from JSON
-  native_range_vlan              = try(each.value.native_range.vlan, null) != "" && try(each.value.native_range.vlan, null) != null ? try(each.value.native_range.vlan, null) : null
-  native_range_mdns_reflector    = try(each.value.native_range.mdns_reflector, false)
-  native_range_translated_subnet = try(each.value.native_range.translated_subnet, null) != "" && try(each.value.native_range.translated_subnet, null) != null ? try(each.value.native_range.translated_subnet, null) : null
+  native_range_vlan           = try(each.value.native_range.vlan, null) != "" && try(each.value.native_range.vlan, null) != null ? try(each.value.native_range.vlan, null) : null
+  native_range_mdns_reflector = try(each.value.native_range.mdns_reflector, false)
+  # Identity translation (translated == subnet) is omitted: it is a no-op, and the API rejects
+  # translatedSubnet outright on tenants with Static Range Translation disabled.
+  native_range_translated_subnet = try(each.value.native_range.translated_subnet, null) != "" && try(each.value.native_range.translated_subnet, null) != null && try(each.value.native_range.translated_subnet, null) != try(each.value.native_range.subnet, null) ? try(each.value.native_range.translated_subnet, null) : null
 
   # DHCP settings from JSON (only set when there are meaningful values)
   native_range_dhcp_settings = try(each.value.native_range.dhcp_settings, null) != null ? {
@@ -604,14 +608,14 @@ module "socket-site" {
   default_interface_network_ranges = flatten([
     for lan in try(each.value.lan_interfaces, []) : [
       for nr in lan.network_ranges : {
-        id                = nr.id
+        id                = try(nr.id, null) # absent in a --strip-ids export; only used for import
         name              = nr.name
         range_type        = nr.range_type
         subnet            = nr.subnet
         local_ip          = nr.local_ip
         gateway           = nr.gateway
         vlan              = nr.vlan != "" && nr.vlan != null ? tonumber(nr.vlan) : null
-        translated_subnet = try(trimspace(nr.translated_subnet), "") != "" ? nr.translated_subnet : null
+        translated_subnet = try(trimspace(nr.translated_subnet), "") != "" && try(trimspace(nr.translated_subnet), "") != try(trimspace(nr.subnet), "") ? nr.translated_subnet : null # identity omitted (see native_range_translated_subnet)
         internet_only     = try(nr.internet_only, null)
         mdns_reflector    = nr.mdns_reflector
         # Transform dhcp_settings to only include relay fields when dhcp_type is DHCP_RELAY
